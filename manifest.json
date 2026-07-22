@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "社内用 Teams メッセージ抽出ツール",
+  "version": "0.1.0",
+  "description": "Microsoft Teams のチャット履歴を自動スクロールで収集し、CSV/HTMLとしてローカル保存する社内専用ツール。外部サーバーへの送信は一切行わない。",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://teams.microsoft.com/*",
+    "https://teams.live.com/*",
+    "https://teams.cloud.microsoft/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Teams メッセージ抽出"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://teams.cloud.microsoft/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
