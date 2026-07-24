@@ -2,7 +2,7 @@ const statusEl = document.getElementById('status');
 const actionBtn = document.getElementById('actionBtn');
 const openTeamsBtn = document.getElementById('openTeamsBtn');
 
-const TEAMS_URL_RE = /teams\.(microsoft\.com|live\.com|cloud\.microsoft)/;
+const TEAMS_URL_RE = /^https:\/\/teams\.microsoft\.com\//;
 const TEAMS_WEB_URL = 'https://teams.microsoft.com/v2/';
 
 let running = false;
