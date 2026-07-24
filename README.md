@@ -20,7 +20,17 @@ Teamsのメッセージ抽出ツールです。
 - 絵文字リアクションの収集
 - 収集に10分以上かかる大データの書出
 
+## インストール
+
+### Chrome ウェブストアから（推奨）
+
+以下のページから「Chromeに追加」でインストールできます。EdgeでもChromeウェブストアからそのままインストール可能です。
+
+https://chromewebstore.google.com/detail/teams-%E3%83%A1%E3%83%83%E3%82%BB%E3%83%BC%E3%82%B8%E6%8A%BD%E5%87%BA%E3%83%84%E3%83%BC%E3%83%AB/pomminhgcphacjlnibbbafbobmlojonl
+
 ## インストール手順（開発者モードで読み込み）
+
+ストアを経由せず、このリポジトリのソースを直接読み込む場合の手順。
 
 ### Chrome の場合
 
