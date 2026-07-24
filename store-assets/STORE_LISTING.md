@@ -1,7 +1,8 @@
-# ストア掲載用説明文（Microsoft Edge アドオン）
+# ストア掲載用説明文（Chrome ウェブストア）
 
-Edge Add-ons の登録画面（partner.microsoft.com/dashboard/microsoftedge）に
-そのまま貼り付けられるよう、項目ごとに分けてある。
+Chrome ウェブストアのデベロッパーダッシュボード
+（chrome.google.com/webstore/devconsole）にそのまま貼り付けられるよう、
+項目ごとに分けてある。
 
 ---
 
