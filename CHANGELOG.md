@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- リポジトリのファイル整理（拡張機能の動作に変更なし）:
+  ストア掲載用の素材（STORE_LISTING.md・スクリーンショット・プロモ画像）を
+  `store-assets/` フォルダにまとめ、`icons/` は実行に必要なアイコンのみにした。
+- STORE_LISTING.md の見出しをEdgeアドオン向けからChromeウェブストア向けに修正。
+- READMEの誤記修正（フォルダ名 `teams-extractor` → `teams-exporter`、
+  完了ログの文言例を実際の出力形式に一致させた）。
+
 ## [0.1.5] - 2026-07-24
 
 ### Fixed
