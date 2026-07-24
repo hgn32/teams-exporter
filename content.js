@@ -180,6 +180,22 @@ function isPlaceholderDataUri(src) {
   return src.length < 200;
 }
 
+// アニメーション絵文字等は、テーマ・モーション設定違いの複数バリアント
+// （静止画/アニメーション、ライト/ダーク等）が同時にDOM上へ描画され、
+// CSSで表示側だけを残す実装になっていることがある。抽出時にCSSの
+// 出し分けは反映されないため、非表示のバリアントも構わず拾ってしまうと
+// 「同じ絵文字が何十個も並ぶ」ような重複が発生する。実際に表示されている
+// 要素だけを対象にすることでこれを防ぐ
+function isRenderedVisible(el) {
+  if (!el.isConnected) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) {
+    return false;
+  }
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
 // 画面上に描画済みの<img>要素をその場でcanvas経由でdata URIにする。
 // blob: URL（後で失効するためfetchでは間に合わないことがある）や
 // 読み込み済み同一オリジン画像はこれで即座に確保できる。
@@ -229,9 +245,13 @@ function extractAttachments(bodyEl, searchRoot) {
   }
 
   if (bodyEl) {
+    const seenImageSrc = new Set();
     bodyEl.querySelectorAll('img').forEach((img) => {
+      if (!isRenderedVisible(img)) return; // アニメーション絵文字等の非表示バリアントは除外
       const alt = img.getAttribute('alt') || img.getAttribute('title') || '';
       if (!img.src) return;
+      if (seenImageSrc.has(img.src)) return; // 同じ画像の重複要素は1つにまとめる
+      seenImageSrc.add(img.src);
       const entry = { src: img.src, alt: alt || '(ファイル名不明)' };
       if (img.src.startsWith('data:')) {
         // 遅延読み込みのプレースホルダはまだ「未解決」として扱い、

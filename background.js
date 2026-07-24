@@ -123,21 +123,6 @@ function escapeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
-// 拡張子ごとにそれらしいアイコンを添える程度の見た目調整（厳密な
-// ファイル種別判定ではない）
-function fileIcon(name) {
-  const ext = ((String(name).match(/\.([a-z0-9]+)$/i) || [])[1] || '').toLowerCase();
-  const map = {
-    xlsx: '📊', xls: '📊', csv: '📊',
-    docx: '📄', doc: '📄', pdf: '📄', txt: '📄',
-    md: '📝',
-    pptx: '📈', ppt: '📈',
-    svg: '🖼️', png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️',
-    zip: '🗜️',
-  };
-  return map[ext] || '📎';
-}
-
 function toHTML(messages, tabUrl, pageTitle) {
   const rows = messages
     .map((m) => {
@@ -158,7 +143,7 @@ function toHTML(messages, tabUrl, pageTitle) {
           ),
         ...(m.files || []).map(
           (f) =>
-            `<a class="file-chip" href="${escapeHtml(f.href)}" target="_blank" rel="noopener noreferrer"><span class="file-chip-icon">${fileIcon(f.name)}</span><span class="file-chip-name">${escapeHtml(f.name)}</span></a>`
+            `<a class="file-chip" href="${escapeHtml(f.href)}" target="_blank" rel="noopener noreferrer"><span class="file-chip-icon">📎</span><span class="file-chip-name">${escapeHtml(f.name)}</span></a>`
         ),
       ].join('\n');
       const attachmentsHtml = chipHtml ? `<div class="attachments">${chipHtml}</div>` : '';
