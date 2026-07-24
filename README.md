@@ -60,9 +60,11 @@ Edge は Chromium ベースで Manifest V3 拡張機能をそのまま読み込�
 
 ```
 teams-extractor/
-├── manifest.json   # 拡張機能の設定（MV3）
-├── content.js      # Teamsページに注入し、DOM抽出・自動スクロールを行う
-├── background.js   # service worker（抽出処理の進行管理・HTML生成・ダウンロード・画像取得を担当。popupを閉じても継続動作する）
-├── popup.html      # ポップアップUI
-└── popup.js        # ポップアップのロジック（backgroundの状態・ログを表示するだけのビュー）
+├── manifest.json    # 拡張機能の設定（MV3）
+├── content.js       # Teamsページに注入し、DOM抽出・自動スクロールを行う
+├── background.js    # service worker（抽出処理の進行管理・HTML生成・ダウンロード・画像取得を担当。popupを閉じても継続動作する）
+├── popup.html       # ポップアップUI
+├── popup.js         # ポップアップのロジック（backgroundの状態・ログを表示するだけのビュー）
+├── icons/           # 拡張機能アイコン（manifest.jsonから参照。実行に必要）
+└── store-assets/    # ストア掲載用のスクリーンショット・プロモ画像（実行には不要、登録作業用）
 ```
