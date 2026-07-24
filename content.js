@@ -692,6 +692,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'START_EXTRACT') {
+    // 抽出には数十秒〜最大10分かかる。background(service worker)は1回の
+    // 応答をそんなに長時間待ち続けられない（アイドル判定で再起動されうる）
+    // ため、開始を受理した旨だけ即座に返し、実際の結果はPROGRESSと同じ
+    // 「待たれない通知」としてEXTRACT_RESULTで別途送る
+    sendResponse({ ok: true });
+
     (async () => {
       try {
         const pageTitleInfo = extractPageTitle();
@@ -741,11 +747,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
         }
 
-        sendResponse({ ok: true, messages, stats, pageTitle: pageTitleInfo.title, titleSource: pageTitleInfo.source });
+        chrome.runtime.sendMessage({
+          type: 'EXTRACT_RESULT',
+          ok: true,
+          messages,
+          stats,
+          pageTitle: pageTitleInfo.title,
+          titleSource: pageTitleInfo.source,
+        });
       } catch (e) {
-        sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        chrome.runtime.sendMessage({
+          type: 'EXTRACT_RESULT',
+          ok: false,
+          error: String(e && e.message ? e.message : e),
+        });
       }
     })();
-    return true; // 非同期でsendResponseを呼ぶために必須
+
+    return false; // sendResponseは既に同期的に呼び終えている
   }
 });

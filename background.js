@@ -13,6 +13,17 @@
 //    そのためcontent scriptとのやり取り・完了後のHTML生成・ダウンロードは
 //    すべてこのservice worker側で行い、popupは「開いている間だけ状態を
 //    表示するビュー」として扱う。popupを閉じても抽出自体は継続する。
+//
+//    重要: service workerは「1回のchrome.runtime.sendMessageの応答を
+//    数分間待ち続ける」ことに対して長時間の生存を保証されない
+//    （アイドル判定や再起動の対象になりうる）。そのためcontent script
+//    には「開始を受理した」旨だけ即座に返させ、実際の抽出結果は
+//    完了時にcontent script側から改めてEXTRACT_RESULTとして
+//    通知させる（PROGRESSと同じ「待たない」やり方）。あわせて
+//    実行中の状態（running/対象タブ/ログ）はchrome.storage.sessionにも
+//    書き出す。service workerが処理の途中で再起動されても
+//    （再起動は次に届いたイベントで自動的に行われる）状態を
+//    読み直せるので、どのタイミングで再起動されても結果を正しく拾える。
 // 外部サーバーへの送信は一切行わない（GETで画像を読むだけ、生成物はローカル保存のみ）。
 // ============================================================
 
@@ -50,15 +61,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ============================================================
-// 抽出処理の状態管理（popupが閉じていても継続する）
+// 抽出処理の状態管理（popupが閉じていても・service workerが途中で
+// 再起動されても継続する）
 // ============================================================
 
-const state = {
-  running: false,
-  cancelling: false,
-  tabId: null,
-  log: [],
-};
+const DEFAULT_STATE = { running: false, cancelling: false, tabId: null, tabUrl: '', log: [] };
+let state = { ...DEFAULT_STATE };
+
+// service worker起動直後は必ずchrome.storage.sessionから状態を読み直す。
+// （前回のインスタンスが再起動された場合、モジュール変数は全て初期値に
+// 戻ってしまうため、これが無いと実行中の状態を見失う）
+const stateReady = (async () => {
+  try {
+    const stored = await chrome.storage.session.get('extractState');
+    if (stored && stored.extractState) {
+      state = { ...DEFAULT_STATE, ...stored.extractState };
+    }
+  } catch (e) {
+    /* storage.sessionが使えない環境ではメモリ内の初期値のまま動く */
+  }
+})();
+
+function persistState() {
+  chrome.storage.session.set({ extractState: state }).catch(() => {});
+}
 
 // popupが開いていなければ受け手が無く失敗するだけなので、エラーは無視してよい
 function broadcast(msg) {
@@ -73,16 +99,19 @@ function broadcast(msg) {
 
 function broadcastStatus() {
   broadcast({ type: 'BG_STATUS', running: state.running, cancelling: state.cancelling });
+  persistState();
 }
 
 function setLog(line) {
   state.log = [line];
   broadcast({ type: 'BG_LOG', log: state.log });
+  persistState();
 }
 
 function pushLog(line) {
   state.log.push(line);
   broadcast({ type: 'BG_LOG', log: state.log });
+  persistState();
 }
 
 // 走査の進捗は行を積み上げず、直前の進捗行を上書きする
@@ -94,6 +123,7 @@ function updateProgressLog(line) {
     state.log.push(line);
   }
   broadcast({ type: 'BG_LOG', log: state.log });
+  persistState();
 }
 
 function sendToContentTab(tabId, message) {
@@ -203,35 +233,28 @@ function toHTML(messages, tabUrl, pageTitle) {
 </body></html>`;
 }
 
-function downloadBlobToPath(content, relPath, mime) {
+// service worker内にはdocument/DOMが無く、Blob/URL.createObjectURLは
+// 環境によって使えない（実際にservice worker内で例外を投げてダウンロード
+// が無言で失敗する事例を確認した）。DOM APIに依存しない
+// data:URIを直接組み立ててchrome.downloads.downloadに渡す
+function downloadTextToPath(content, relPath, mime) {
   return new Promise((resolve) => {
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    chrome.downloads.download({ url, filename: relPath, saveAs: false }, () => {
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    const base64 = arrayBufferToBase64(new TextEncoder().encode(content).buffer);
+    const dataUri = `data:${mime};base64,${base64}`;
+    chrome.downloads.download({ url: dataUri, filename: relPath, saveAs: false }, () => {
       resolve(!chrome.runtime.lastError);
     });
   });
 }
 
-async function runExtraction(tabId, tabUrl) {
-  state.tabId = tabId;
-  state.cancelling = false;
-  state.running = true;
-  broadcastStatus();
-  setLog(
-    '抽出開始（自動スクロール中。チャットの長さによっては数十秒〜数分かかります。最大10分で自動終了します。popupを閉じても処理は継続します）...'
-  );
-
+async function handleExtractResult(msg) {
   try {
-    const res = await sendToContentTab(tabId, { type: 'START_EXTRACT', embedImages: true });
-
-    if (!res || !res.ok) {
-      pushLog('エラー: ' + (res && res.error ? res.error : '不明なエラー（content scriptと通信できない可能性）'));
+    if (!msg.ok) {
+      pushLog('エラー: ' + (msg.error || '不明なエラー（content scriptと通信できない可能性）'));
       return;
     }
 
-    const messages = res.messages;
+    const messages = msg.messages || [];
 
     if (messages.length === 0) {
       pushLog('0件でした。Teamsの画面構造が変わり、content.js のセレクタが合わなくなっている可能性があります。');
@@ -240,7 +263,7 @@ async function runExtraction(tabId, tabUrl) {
 
     // 通常時は結果1行だけ。問題があったときだけ詳細を追加で出す
     // （このログを貼れば原因が特定できるように、警告の中身は残す）
-    const stats = res.stats;
+    const stats = msg.stats;
     const summary = [`完了: ${messages.length}件`];
     if (stats) {
       summary.push(`画像 ${stats.imagesEmbedded}/${stats.imagesTotal}`, `添付 ${stats.fileCards}件`);
@@ -266,59 +289,118 @@ async function runExtraction(tabId, tabUrl) {
     const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
     const filename = `teams_export_${stamp}.html`;
 
-    const saved = await downloadBlobToPath(toHTML(messages, tabUrl, res.pageTitle), filename, 'text/html;charset=utf-8');
-    if (saved) {
-      pushLog(`ダウンロードを開始しました（Downloads/${filename}）。`);
-    } else {
-      pushLog(`ダウンロードに失敗しました（${filename}）。`);
+    try {
+      const saved = await downloadTextToPath(toHTML(messages, state.tabUrl, msg.pageTitle), filename, 'text/html;charset=utf-8');
+      pushLog(saved ? `ダウンロードを開始しました（Downloads/${filename}）。` : `ダウンロードに失敗しました（${filename}）。`);
+    } catch (e) {
+      // ここで無言で失敗すると「完了ログは出たのにファイルが来ない」という
+      // 原因不明の不具合になるため、必ずログに出す
+      pushLog('ダウンロード処理でエラーが発生しました: ' + String(e && e.message ? e.message : e));
     }
   } finally {
     state.running = false;
     state.cancelling = false;
     state.tabId = null;
+    state.tabUrl = '';
     broadcastStatus();
   }
+}
+
+async function handleStartRequest(tabId, tabUrl, sendResponse) {
+  if (state.running) {
+    sendResponse({ ok: false, error: '既に他のタブで抽出処理が実行中です。' });
+    return;
+  }
+
+  // content scriptには「開始を受理したか」だけを即座に確認する。
+  // 実際の抽出完了はEXTRACT_RESULTの通知を待つ（長時間の応答待ちはしない）
+  const ack = await sendToContentTab(tabId, { type: 'START_EXTRACT', embedImages: true });
+  if (!ack || !ack.ok) {
+    sendResponse({ ok: false, error: ack && ack.error ? ack.error : '不明なエラー（content scriptと通信できない可能性）' });
+    return;
+  }
+
+  state.tabId = tabId;
+  state.tabUrl = tabUrl;
+  state.cancelling = false;
+  state.running = true;
+  broadcastStatus();
+  setLog(
+    '抽出開始（自動スクロール中。チャットの長さによっては数十秒〜数分かかります。最大10分で自動終了します。popupを閉じても処理は継続します）...'
+  );
+  sendResponse({ ok: true });
+}
+
+async function handleCancelRequest(sendResponse) {
+  if (!state.running || !state.tabId) {
+    sendResponse({ ok: false });
+    return;
+  }
+  state.cancelling = true;
+  broadcastStatus();
+  pushLog('中止を要求しました。現在のラウンドの処理が終わり次第停止します...');
+  await sendToContentTab(state.tabId, { type: 'CANCEL_EXTRACT' });
+  sendResponse({ ok: true });
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
 
-  // content scriptからの走査進捗のブロードキャスト。popupが閉じていても
-  // ここで受け取ってログに積み、次にpopupが開いたときに再現できるようにする
-  if (msg.type === 'PROGRESS') {
-    if (state.running) updateProgressLog(`収集済み: ${msg.count}件 (走査${msg.round}周目)`);
-    return;
-  }
-  if (msg.type === 'PROGRESS_STAGE') {
-    if (state.running) pushLog(msg.stage);
+  // content scriptからの進捗・完了の通知。いずれも「応答を待たれていない」
+  // 一方的な通知なので、service workerがこの間に再起動されていても
+  // （stateReadyで読み直した上で）取りこぼさず処理できる
+  if (msg.type === 'PROGRESS' || msg.type === 'PROGRESS_STAGE' || msg.type === 'EXTRACT_RESULT') {
+    const tabId = sender && sender.tab ? sender.tab.id : null;
+    (async () => {
+      await stateReady;
+      if (tabId == null || tabId !== state.tabId) return; // 対象タブ以外・二重配信は無視
+      if (msg.type === 'PROGRESS') {
+        if (state.running) updateProgressLog(`収集済み: ${msg.count}件 (走査${msg.round}周目)`);
+      } else if (msg.type === 'PROGRESS_STAGE') {
+        if (state.running) pushLog(msg.stage);
+      } else {
+        await handleExtractResult(msg);
+      }
+    })();
     return;
   }
 
   if (msg.type === 'GET_STATE') {
-    sendResponse({ running: state.running, cancelling: state.cancelling, log: state.log });
-    return;
+    (async () => {
+      await stateReady;
+      sendResponse({ running: state.running, cancelling: state.cancelling, log: state.log });
+    })();
+    return true;
   }
 
   if (msg.type === 'START_EXTRACT_REQUEST') {
-    if (state.running) {
-      sendResponse({ ok: false, error: '既に他のタブで抽出処理が実行中です。' });
-      return;
-    }
-    sendResponse({ ok: true });
-    runExtraction(msg.tabId, msg.tabUrl);
-    return;
+    (async () => {
+      await stateReady;
+      await handleStartRequest(msg.tabId, msg.tabUrl, sendResponse);
+    })();
+    return true;
   }
 
   if (msg.type === 'CANCEL_EXTRACT_REQUEST') {
-    if (!state.running || !state.tabId) {
-      sendResponse({ ok: false });
-      return;
-    }
-    state.cancelling = true;
-    broadcastStatus();
-    pushLog('中止を要求しました。現在のラウンドの処理が終わり次第停止します...');
-    sendToContentTab(state.tabId, { type: 'CANCEL_EXTRACT' });
-    sendResponse({ ok: true });
-    return;
+    (async () => {
+      await stateReady;
+      await handleCancelRequest(sendResponse);
+    })();
+    return true;
   }
+});
+
+// 抽出対象のタブが閉じられた場合、状態が「実行中」のまま固まらないようにする
+chrome.tabs.onRemoved.addListener((tabId) => {
+  (async () => {
+    await stateReady;
+    if (state.running && tabId === state.tabId) {
+      pushLog('抽出対象のタブが閉じられたため中止しました。');
+      state.running = false;
+      state.cancelling = false;
+      state.tabId = null;
+      state.tabUrl = '';
+      broadcastStatus();
+    }
+  })();
 });
