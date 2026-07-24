@@ -19,11 +19,10 @@
 //    （アイドル判定や再起動の対象になりうる）。そのためcontent script
 //    には「開始を受理した」旨だけ即座に返させ、実際の抽出結果は
 //    完了時にcontent script側から改めてEXTRACT_RESULTとして
-//    通知させる（PROGRESSと同じ「待たない」やり方）。あわせて
-//    実行中の状態（running/対象タブ/ログ）はchrome.storage.sessionにも
-//    書き出す。service workerが処理の途中で再起動されても
-//    （再起動は次に届いたイベントで自動的に行われる）状態を
-//    読み直せるので、どのタイミングで再起動されても結果を正しく拾える。
+//    通知させる（PROGRESSと同じ「待たない」やり方）。抽出中は
+//    数秒おきにPROGRESSが飛んでくるため、その受信自体がservice worker
+//    のアイドルタイマーをリセットし続け、生存し続ける前提で設計している
+//    （追加の権限（storage等）を増やしたくないため、状態の永続化はしない）。
 // 外部サーバーへの送信は一切行わない（GETで画像を読むだけ、生成物はローカル保存のみ）。
 // ============================================================
 
@@ -61,30 +60,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ============================================================
-// 抽出処理の状態管理（popupが閉じていても・service workerが途中で
-// 再起動されても継続する）
+// 抽出処理の状態管理（popupが閉じていても継続する）
 // ============================================================
 
-const DEFAULT_STATE = { running: false, cancelling: false, tabId: null, tabUrl: '', log: [] };
-let state = { ...DEFAULT_STATE };
-
-// service worker起動直後は必ずchrome.storage.sessionから状態を読み直す。
-// （前回のインスタンスが再起動された場合、モジュール変数は全て初期値に
-// 戻ってしまうため、これが無いと実行中の状態を見失う）
-const stateReady = (async () => {
-  try {
-    const stored = await chrome.storage.session.get('extractState');
-    if (stored && stored.extractState) {
-      state = { ...DEFAULT_STATE, ...stored.extractState };
-    }
-  } catch (e) {
-    /* storage.sessionが使えない環境ではメモリ内の初期値のまま動く */
-  }
-})();
-
-function persistState() {
-  chrome.storage.session.set({ extractState: state }).catch(() => {});
-}
+const state = { running: false, cancelling: false, tabId: null, tabUrl: '', log: [] };
 
 // popupが開いていなければ受け手が無く失敗するだけなので、エラーは無視してよい
 function broadcast(msg) {
@@ -99,19 +78,16 @@ function broadcast(msg) {
 
 function broadcastStatus() {
   broadcast({ type: 'BG_STATUS', running: state.running, cancelling: state.cancelling });
-  persistState();
 }
 
 function setLog(line) {
   state.log = [line];
   broadcast({ type: 'BG_LOG', log: state.log });
-  persistState();
 }
 
 function pushLog(line) {
   state.log.push(line);
   broadcast({ type: 'BG_LOG', log: state.log });
-  persistState();
 }
 
 // 走査の進捗は行を積み上げず、直前の進捗行を上書きする
@@ -123,7 +99,6 @@ function updateProgressLog(line) {
     state.log.push(line);
   }
   broadcast({ type: 'BG_LOG', log: state.log });
-  persistState();
 }
 
 function sendToContentTab(tabId, message) {
@@ -347,60 +322,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
 
   // content scriptからの進捗・完了の通知。いずれも「応答を待たれていない」
-  // 一方的な通知なので、service workerがこの間に再起動されていても
-  // （stateReadyで読み直した上で）取りこぼさず処理できる
+  // 一方的な通知として届く（PROGRESSと同じやり方）
   if (msg.type === 'PROGRESS' || msg.type === 'PROGRESS_STAGE' || msg.type === 'EXTRACT_RESULT') {
     const tabId = sender && sender.tab ? sender.tab.id : null;
-    (async () => {
-      await stateReady;
-      if (tabId == null || tabId !== state.tabId) return; // 対象タブ以外・二重配信は無視
-      if (msg.type === 'PROGRESS') {
-        if (state.running) updateProgressLog(`収集済み: ${msg.count}件 (走査${msg.round}周目)`);
-      } else if (msg.type === 'PROGRESS_STAGE') {
-        if (state.running) pushLog(msg.stage);
-      } else {
-        await handleExtractResult(msg);
-      }
-    })();
+    if (tabId == null || tabId !== state.tabId) return; // 対象タブ以外・二重配信は無視
+    if (msg.type === 'PROGRESS') {
+      if (state.running) updateProgressLog(`収集済み: ${msg.count}件 (走査${msg.round}周目)`);
+    } else if (msg.type === 'PROGRESS_STAGE') {
+      if (state.running) pushLog(msg.stage);
+    } else {
+      handleExtractResult(msg);
+    }
     return;
   }
 
   if (msg.type === 'GET_STATE') {
-    (async () => {
-      await stateReady;
-      sendResponse({ running: state.running, cancelling: state.cancelling, log: state.log });
-    })();
-    return true;
+    sendResponse({ running: state.running, cancelling: state.cancelling, log: state.log });
+    return;
   }
 
   if (msg.type === 'START_EXTRACT_REQUEST') {
-    (async () => {
-      await stateReady;
-      await handleStartRequest(msg.tabId, msg.tabUrl, sendResponse);
-    })();
+    handleStartRequest(msg.tabId, msg.tabUrl, sendResponse);
     return true;
   }
 
   if (msg.type === 'CANCEL_EXTRACT_REQUEST') {
-    (async () => {
-      await stateReady;
-      await handleCancelRequest(sendResponse);
-    })();
+    handleCancelRequest(sendResponse);
     return true;
   }
 });
 
 // 抽出対象のタブが閉じられた場合、状態が「実行中」のまま固まらないようにする
 chrome.tabs.onRemoved.addListener((tabId) => {
-  (async () => {
-    await stateReady;
-    if (state.running && tabId === state.tabId) {
-      pushLog('抽出対象のタブが閉じられたため中止しました。');
-      state.running = false;
-      state.cancelling = false;
-      state.tabId = null;
-      state.tabUrl = '';
-      broadcastStatus();
-    }
-  })();
+  if (state.running && tabId === state.tabId) {
+    pushLog('抽出対象のタブが閉じられたため中止しました。');
+    state.running = false;
+    state.cancelling = false;
+    state.tabId = null;
+    state.tabUrl = '';
+    broadcastStatus();
+  }
 });
