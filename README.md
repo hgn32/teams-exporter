@@ -1,5 +1,7 @@
 # Teams メッセージ抽出ツール
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P1O623UCN0)
+
 Teamsのメッセージ抽出ツールです。
 処理は全て拡張機能内のJavaScriptで完結し、外部サーバーへの通信は一切行いません。
 
