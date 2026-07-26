@@ -75,7 +75,14 @@ actionBtn.addEventListener('click', async () => {
     return;
   }
 
-  const res = await sendToBackground({ type: 'START_EXTRACT_REQUEST', tabId: tab.id, tabUrl: tab.url });
+  const formatEl = document.querySelector('input[name="format"]:checked');
+  const format = formatEl ? formatEl.value : 'docx';
+  const res = await sendToBackground({
+    type: 'START_EXTRACT_REQUEST',
+    tabId: tab.id,
+    tabUrl: tab.url,
+    format,
+  });
   if (!res || !res.ok) {
     render(['エラー: ' + (res && res.error ? res.error : '開始できませんでした。')]);
     return;
@@ -104,11 +111,14 @@ async function init() {
   // Teams以外のタブでは抽出を始めようがないので、代わりにTeams Web版を
   // 開くボタンを出す。ただし他タブで抽出処理が進行中の場合は、中止操作を
   // できるようにするため通常の（中止）ボタンを優先して表示する
+  const formatRow = document.getElementById('formatRow');
   if (!isTeamsTab && !running) {
     actionBtn.style.display = 'none';
+    formatRow.style.display = 'none';
     openTeamsBtn.style.display = 'block';
   } else {
     actionBtn.style.display = 'block';
+    formatRow.style.display = 'flex';
     openTeamsBtn.style.display = 'none';
   }
 }

@@ -26,6 +26,9 @@
 // 外部サーバーへの送信は一切行わない（GETで画像を読むだけ、生成物はローカル保存のみ）。
 // ============================================================
 
+// Word (.docx) 生成モジュール（self.TeamsDocx を定義する）
+importScripts('docx.js');
+
 function arrayBufferToBase64(buf) {
   const bytes = new Uint8Array(buf);
   let binary = '';
@@ -63,7 +66,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // 抽出処理の状態管理（popupが閉じていても継続する）
 // ============================================================
 
-const state = { running: false, cancelling: false, tabId: null, tabUrl: '', log: [] };
+const state = { running: false, cancelling: false, tabId: null, tabUrl: '', format: 'docx', log: [] };
 
 // popupが開いていなければ受け手が無く失敗するだけなので、エラーは無視してよい
 function broadcast(msg) {
@@ -198,8 +201,12 @@ function toHTML(messages, tabUrl, pageTitle) {
 // が無言で失敗する事例を確認した）。DOM APIに依存しない
 // data:URIを直接組み立ててchrome.downloads.downloadに渡す
 function downloadTextToPath(content, relPath, mime) {
+  return downloadBytesToPath(new TextEncoder().encode(content), relPath, mime);
+}
+
+function downloadBytesToPath(bytes, relPath, mime) {
   return new Promise((resolve) => {
-    const base64 = arrayBufferToBase64(new TextEncoder().encode(content).buffer);
+    const base64 = arrayBufferToBase64(bytes.buffer);
     const dataUri = `data:${mime};base64,${base64}`;
     chrome.downloads.download({ url: dataUri, filename: relPath, saveAs: false }, () => {
       resolve(!chrome.runtime.lastError);
@@ -244,13 +251,34 @@ async function handleExtractResult(msg) {
       }
     }
 
-    // 出力は1つのHTMLファイルだけ（画像はbase64埋め込み、添付はリンク）
-    // なので、フォルダは掘らずDownloads直下にそのまま保存する
+    // 出力は1つのファイルだけ（画像は埋め込み、添付はリンク）なので、
+    // フォルダは掘らずDownloads直下にそのまま保存する。
+    // 形式は抽出開始時にpopupで選択されたもの（Word docx / HTML）
     const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
-    const filename = `teams_export_${stamp}.html`;
+    const format = state.format === 'html' ? 'html' : 'docx';
+    const filename = `teams_export_${stamp}.${format}`;
 
     try {
-      const saved = await downloadTextToPath(toHTML(messages, state.tabUrl, msg.pageTitle), filename, 'text/html;charset=utf-8');
+      let saved;
+      if (format === 'docx') {
+        const bytes = TeamsDocx.buildDocx({
+          title: msg.pageTitle || 'Teams チャット抽出結果',
+          sourceUrl: state.tabUrl,
+          exportedAt: new Date().toLocaleString('ja-JP'),
+          messages,
+        });
+        saved = await downloadBytesToPath(
+          bytes,
+          filename,
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        );
+      } else {
+        saved = await downloadTextToPath(
+          toHTML(messages, state.tabUrl, msg.pageTitle),
+          filename,
+          'text/html;charset=utf-8'
+        );
+      }
       pushLog(saved ? `ダウンロードを開始しました（Downloads/${filename}）。` : `ダウンロードに失敗しました（${filename}）。`);
     } catch (e) {
       // ここで無言で失敗すると「完了ログは出たのにファイルが来ない」という
@@ -266,7 +294,7 @@ async function handleExtractResult(msg) {
   }
 }
 
-async function handleStartRequest(tabId, tabUrl, sendResponse) {
+async function handleStartRequest(tabId, tabUrl, format, sendResponse) {
   if (state.running) {
     sendResponse({ ok: false, error: '既に他のタブで抽出処理が実行中です。' });
     return;
@@ -282,6 +310,7 @@ async function handleStartRequest(tabId, tabUrl, sendResponse) {
 
   state.tabId = tabId;
   state.tabUrl = tabUrl;
+  state.format = format === 'html' ? 'html' : 'docx';
   state.cancelling = false;
   state.running = true;
   broadcastStatus();
@@ -327,7 +356,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'START_EXTRACT_REQUEST') {
-    handleStartRequest(msg.tabId, msg.tabUrl, sendResponse);
+    handleStartRequest(msg.tabId, msg.tabUrl, msg.format, sendResponse);
     return true;
   }
 

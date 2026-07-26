@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Teams メッセージ抽出ツール",
-  "version": "0.1.3",
-  "description": "MicrosoftTeamsのチャット履歴を自動スクロールで収集しHTMLとして保存するツール。外部サーバーへの送信は一切行わない。",
+  "version": "0.2.0",
+  "description": "MicrosoftTeamsのチャット履歴を自動スクロールで収集しWord(docx)またはHTMLとして保存するツール。外部サーバーへの送信は一切行わない。",
   "permissions": [
     "activeTab",
     "scripting",
