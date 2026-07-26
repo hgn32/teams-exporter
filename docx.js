@@ -463,4 +463,14 @@
   }
 
   self.TeamsDocx = { buildDocx };
+
+  // pdf.js と共有するユーティリティ（backgroundは docx.js → pdf.js の順に
+  // importScripts するため、pdf.js からはこの名前空間が見える）
+  self.TeamsExportShared = {
+    parseBodyHtml,
+    htmlUnescape,
+    dataUriToBytes,
+    getImageSizePx,
+    isLinkableHref,
+  };
 })();

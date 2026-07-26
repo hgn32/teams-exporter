@@ -26,8 +26,10 @@
 // 外部サーバーへの送信は一切行わない（GETで画像を読むだけ、生成物はローカル保存のみ）。
 // ============================================================
 
-// Word (.docx) 生成モジュール（self.TeamsDocx を定義する）
-importScripts('docx.js');
+// 出力ファイル生成モジュール。docx.js が self.TeamsDocx と共通
+// ユーティリティ self.TeamsExportShared を、pdf.js が self.TeamsPdf を
+// 定義する（pdf.jsは共通ユーティリティを使うため docx.js が先）
+importScripts('docx.js', 'pdf.js');
 
 function arrayBufferToBase64(buf) {
   const bytes = new Uint8Array(buf);
@@ -253,25 +255,27 @@ async function handleExtractResult(msg) {
 
     // 出力は1つのファイルだけ（画像は埋め込み、添付はリンク）なので、
     // フォルダは掘らずDownloads直下にそのまま保存する。
-    // 形式は抽出開始時にpopupで選択されたもの（Word docx / HTML）
+    // 形式は抽出開始時にpopupで選択されたもの（Word docx / PDF / HTML）
     const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
-    const format = state.format === 'html' ? 'html' : 'docx';
+    const format = ['html', 'pdf'].includes(state.format) ? state.format : 'docx';
     const filename = `teams_export_${stamp}.${format}`;
 
     try {
       let saved;
+      const docOpts = {
+        title: msg.pageTitle || 'Teams チャット抽出結果',
+        sourceUrl: state.tabUrl,
+        exportedAt: new Date().toLocaleString('ja-JP'),
+        messages,
+      };
       if (format === 'docx') {
-        const bytes = TeamsDocx.buildDocx({
-          title: msg.pageTitle || 'Teams チャット抽出結果',
-          sourceUrl: state.tabUrl,
-          exportedAt: new Date().toLocaleString('ja-JP'),
-          messages,
-        });
         saved = await downloadBytesToPath(
-          bytes,
+          TeamsDocx.buildDocx(docOpts),
           filename,
           'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         );
+      } else if (format === 'pdf') {
+        saved = await downloadBytesToPath(await TeamsPdf.buildPdf(docOpts), filename, 'application/pdf');
       } else {
         saved = await downloadTextToPath(
           toHTML(messages, state.tabUrl, msg.pageTitle),
@@ -310,7 +314,7 @@ async function handleStartRequest(tabId, tabUrl, format, sendResponse) {
 
   state.tabId = tabId;
   state.tabUrl = tabUrl;
-  state.format = format === 'html' ? 'html' : 'docx';
+  state.format = ['html', 'pdf'].includes(format) ? format : 'docx';
   state.cancelling = false;
   state.running = true;
   broadcastStatus();
