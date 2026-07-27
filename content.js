@@ -196,6 +196,19 @@ function isRenderedVisible(el) {
   return rect.width > 0 && rect.height > 0;
 }
 
+// Teamsの絵文字は本文中の<img>（altに絵文字の文字そのものが入る）として
+// 描画される。これを通常の画像と同じ扱いで別枠に出すと、絵文字1つが
+// 大きな画像ブロックとして絵文字の数だけ縦に並んでしまう。
+// 絵文字は「本文テキストの一部（altの文字）」として復元するため、
+// 画像収集からは除外する必要がある。判定はTeamsが絵文字に付ける
+// マークアップ（schema.skype.com/Emoji）と、絵文字アセットのURLパターンで行う
+function isEmojiImg(img) {
+  if (!img.getAttribute('alt')) return false;
+  if (img.closest('[itemtype="http://schema.skype.com/Emoji"]')) return true;
+  const src = img.src || '';
+  return /\/emoticons?\//i.test(src) || /personal-expressions/i.test(src);
+}
+
 // 画面上に描画済みの<img>要素をその場でcanvas経由でdata URIにする。
 // blob: URL（後で失効するためfetchでは間に合わないことがある）や
 // 読み込み済み同一オリジン画像はこれで即座に確保できる。
@@ -247,6 +260,7 @@ function extractAttachments(bodyEl, searchRoot) {
   if (bodyEl) {
     const seenImageSrc = new Set();
     bodyEl.querySelectorAll('img').forEach((img) => {
+      if (isEmojiImg(img)) return; // 絵文字は本文テキスト側（bodyToSafeHtml）で復元する
       if (!isRenderedVisible(img)) return; // アニメーション絵文字等の非表示バリアントは除外
       const alt = img.getAttribute('alt') || img.getAttribute('title') || '';
       if (!img.src) return;
@@ -325,7 +339,16 @@ function bodyToSafeHtml(bodyEl) {
     }
     if (node.nodeType !== 1) return '';
     const tag = node.tagName.toLowerCase();
-    if (tag === 'img') return ''; // 画像は別枠(images)で表示するため本文中はスキップ
+    if (tag === 'img') {
+      // 絵文字はaltの文字として本文の元の位置に戻す。ただしTeamsは
+      // テーマ・モーション設定違いの複数バリアントを同時にDOMへ描画する
+      // ことがあるため、実際に表示されているものだけを対象にする
+      //（非表示分も拾うと同じ絵文字が重複する）
+      if (isEmojiImg(node)) {
+        return isRenderedVisible(node) ? escapeHtmlText(node.getAttribute('alt')) : '';
+      }
+      return ''; // 通常の画像は別枠(images)で表示するため本文中はスキップ
+    }
     if (tag === 'br') return '<br>';
     const childHtml = Array.from(node.childNodes).map(walk).join('');
     if (tag === 'a' && node.href) {

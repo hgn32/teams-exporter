@@ -226,6 +226,7 @@
   const REL_HYPERLINK = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
   const REL_IMAGE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
   const REL_OFFICE_DOC = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';
+  const REL_STYLES = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles';
 
   // Wordが確実に扱える画像形式のみ埋め込む（それ以外はリンク表示に
   // フォールバック）。拡張子は[Content_Types].xmlのDefault宣言と一致させる
@@ -249,6 +250,32 @@
     return /^(https?:|mailto:)/i.test(String(href || ''));
   }
 
+  // URL中の非ASCII文字（日本語ファイル名等）・空白をパーセント
+  // エンコードする。docxのRelationshipsターゲットやPDFのURI注釈は
+  // ASCII前提の実装が多く、生の日本語が混ざるとリンクが機能しない
+  // ことがある。既にエンコード済みの%XXはそのまま残す
+  function encodeNonAsciiUrl(url) {
+    return String(url || '').replace(/[^\x21-\x7e]/g, (ch) => encodeURIComponent(ch));
+  }
+
+  // TeamsのDOM・SharePoint由来の文字列は、濁点・半濁点が結合文字の
+  // まま分解された形（NFD。例: ベ が ヘ+U+3099）で取れてくることが
+  // ある。Wordや一部フォントはこれを「ヘ゛」のように別々の文字として
+  // 描画してしまうため、全出力形式の共通前処理として合成済み(NFC)へ
+  // 正規化する
+  function nfcNormalizeMessages(messages, pageTitle) {
+    const nfc = (s) => (typeof s === 'string' ? s.normalize('NFC') : s);
+    for (const m of messages || []) {
+      m.author = nfc(m.author);
+      m.text = nfc(m.text);
+      m.bodyHtml = nfc(m.bodyHtml);
+      m.displayTime = nfc(m.displayTime);
+      for (const img of m.images || []) img.alt = nfc(img.alt);
+      for (const f of m.files || []) f.name = nfc(f.name);
+    }
+    return nfc(pageTitle);
+  }
+
   function buildDocx(opts) {
     const title = opts.title || 'Teams チャット抽出結果';
     const messages = opts.messages || [];
@@ -265,11 +292,14 @@
     }
 
     function linkRelId(url) {
-      if (!linkRelIds.has(url)) {
-        linkRelIds.set(url, addRel(REL_HYPERLINK, url, true));
+      const target = encodeNonAsciiUrl(url);
+      if (!linkRelIds.has(target)) {
+        linkRelIds.set(target, addRel(REL_HYPERLINK, target, true));
       }
-      return linkRelIds.get(url);
+      return linkRelIds.get(target);
     }
+
+    addRel(REL_STYLES, 'styles.xml', false);
 
     function runProps(style) {
       const s = style || {};
@@ -417,6 +447,18 @@
       `<w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/>` +
       `</w:sectPr></w:body></w:document>`;
 
+    // フォント既定を指定しないと、日本語がWordの既定フォント任せになり
+    // 環境によって不揃いな見た目になる。Teamsの表示に近いゴシック体
+    // （Yu Gothic UI。無い環境ではWord側でフォールバック）を既定にする
+    const stylesXml =
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+      `<w:styles xmlns:w="${NS_W}">` +
+      `<w:docDefaults><w:rPrDefault><w:rPr>` +
+      `<w:rFonts w:ascii="Yu Gothic UI" w:hAnsi="Yu Gothic UI" w:eastAsia="Yu Gothic UI"/>` +
+      `<w:sz w:val="21"/><w:szCs w:val="21"/>` +
+      `</w:rPr></w:rPrDefault><w:pPrDefault/></w:docDefaults>` +
+      `</w:styles>`;
+
     const contentTypesXml =
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
       `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
@@ -427,6 +469,7 @@
       `<Default Extension="gif" ContentType="image/gif"/>` +
       `<Default Extension="bmp" ContentType="image/bmp"/>` +
       `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>` +
       `</Types>`;
 
     const rootRelsXml =
@@ -453,6 +496,7 @@
       { name: '[Content_Types].xml', bytes: encoder.encode(contentTypesXml) },
       { name: '_rels/.rels', bytes: encoder.encode(rootRelsXml) },
       { name: 'word/document.xml', bytes: encoder.encode(documentXml) },
+      { name: 'word/styles.xml', bytes: encoder.encode(stylesXml) },
       { name: 'word/_rels/document.xml.rels', bytes: encoder.encode(docRelsXml) },
     ];
     for (const img of media) {
@@ -472,5 +516,7 @@
     dataUriToBytes,
     getImageSizePx,
     isLinkableHref,
+    encodeNonAsciiUrl,
+    nfcNormalizeMessages,
   };
 })();

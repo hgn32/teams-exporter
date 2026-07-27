@@ -225,6 +225,10 @@ async function handleExtractResult(msg) {
 
     const messages = msg.messages || [];
 
+    // 濁点・半濁点が結合文字のまま分解された文字列（NFD）を合成済み(NFC)へ
+    // 正規化する（Word等で「ベ」が「ヘ゛」に見える問題の対策。全形式共通）
+    const pageTitle = TeamsExportShared.nfcNormalizeMessages(messages, msg.pageTitle || '');
+
     if (messages.length === 0) {
       pushLog('0件でした。Teamsの画面構造が変わり、content.js のセレクタが合わなくなっている可能性があります。');
       return;
@@ -263,7 +267,7 @@ async function handleExtractResult(msg) {
     try {
       let saved;
       const docOpts = {
-        title: msg.pageTitle || 'Teams チャット抽出結果',
+        title: pageTitle || 'Teams チャット抽出結果',
         sourceUrl: state.tabUrl,
         exportedAt: new Date().toLocaleString('ja-JP'),
         messages,
@@ -278,7 +282,7 @@ async function handleExtractResult(msg) {
         saved = await downloadBytesToPath(await TeamsPdf.buildPdf(docOpts), filename, 'application/pdf');
       } else {
         saved = await downloadTextToPath(
-          toHTML(messages, state.tabUrl, msg.pageTitle),
+          toHTML(messages, state.tabUrl, pageTitle),
           filename,
           'text/html;charset=utf-8'
         );

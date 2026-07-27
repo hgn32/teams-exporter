@@ -363,15 +363,17 @@
       const xobj = p.imgs.length
         ? ` /XObject << ${p.imgs.map((i) => `/${i.name} ${i.objNum} 0 R`).join(' ')} >>`
         : '';
-      const annots = p.annots.length
-        ? ` /Annots [ ${p.annots
-            .map(
-              (a) =>
-                `<< /Type /Annot /Subtype /Link /Rect [${a.rect.map(fmt).join(' ')}] ` +
-                `/Border [0 0 0] /A << /S /URI /URI (${pdfString(a.uri)}) >> >>`
-            )
-            .join(' ')} ]`
-        : '';
+      // リンク注釈は必ず間接オブジェクトにする（ページ辞書内のインライン
+      // 辞書だと、注釈を無視してリンクが機能しないビューアがある）。
+      // URIも非ASCII文字をパーセントエンコードしてASCIIに収める
+      const annotRefs = p.annots.map((a) => {
+        const annotNum = reserve();
+        objects[annotNum] =
+          `<< /Type /Annot /Subtype /Link /Rect [${a.rect.map(fmt).join(' ')}] ` +
+          `/Border [0 0 0] /A << /S /URI /URI (${pdfString(shared.encodeNonAsciiUrl(a.uri))}) >> >>`;
+        return `${annotNum} 0 R`;
+      });
+      const annots = annotRefs.length ? ` /Annots [ ${annotRefs.join(' ')} ]` : '';
       objects[pageNum] =
         `<< /Type /Page /Parent ${pagesNum} 0 R /MediaBox [0 0 ${PAGE_W} ${PAGE_H}] ` +
         `/Resources << /Font << /F1 ${fontNum} 0 R >>${xobj} >> ` +
