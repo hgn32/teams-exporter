@@ -58,11 +58,34 @@
       flex: 1;
     }
 
+    .format-row {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      margin: 2px 0 6px;
+      font-size: 12px;
+      color: #444;
+    }
+
+    .format-row label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+    }
+
   </style>
 </head>
 
 <body>
   <h1>Teams メッセージ抽出</h1>
+
+  <div class="format-row" id="formatRow">
+    <span>出力形式:</span>
+    <label><input type="radio" name="format" value="docx" checked> Word</label>
+    <label><input type="radio" name="format" value="pdf"> PDF</label>
+    <label><input type="radio" name="format" value="html"> HTML</label>
+  </div>
 
   <button id="actionBtn">自動スクロール抽出を開始</button>
   <button id="openTeamsBtn" style="display: none;">Teams Web版を開く</button>
