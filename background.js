@@ -18,7 +18,7 @@
 //    数分間待ち続ける」ことに対して長時間の生存を保証されない
 //    （アイドル判定や再起動の対象になりうる）。そのためcontent script
 //    には「開始を受理した」旨だけ即座に返させ、実際の抽出結果は
-//    完了時にcontent script側から改めてEXTRACT_RESULTとして
+//    完了時にcontent script側から改めてEXTRACT_BEGIN/CHUNK/ENDとして
 //    通知させる（PROGRESSと同じ「待たない」やり方）。抽出中は
 //    数秒おきにPROGRESSが飛んでくるため、その受信自体がservice worker
 //    のアイドルタイマーをリセットし続け、生存し続ける前提で設計している
@@ -68,7 +68,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // 抽出処理の状態管理（popupが閉じていても継続する）
 // ============================================================
 
-const state = { running: false, cancelling: false, tabId: null, tabUrl: '', format: 'docx', log: [] };
+// pending: 分割送信(EXTRACT_BEGIN/CHUNK/END)されてくる抽出結果の受信バッファ
+const state = {
+  running: false,
+  cancelling: false,
+  tabId: null,
+  tabUrl: '',
+  format: 'docx',
+  log: [],
+  pending: null,
+};
 
 // popupが開いていなければ受け手が無く失敗するだけなので、エラーは無視してよい
 function broadcast(msg) {
@@ -298,6 +307,7 @@ async function handleExtractResult(msg) {
     state.cancelling = false;
     state.tabId = null;
     state.tabUrl = '';
+    state.pending = null;
     broadcastStatus();
   }
 }
@@ -309,7 +319,7 @@ async function handleStartRequest(tabId, tabUrl, format, sendResponse) {
   }
 
   // content scriptには「開始を受理したか」だけを即座に確認する。
-  // 実際の抽出完了はEXTRACT_RESULTの通知を待つ（長時間の応答待ちはしない）
+  // 実際の抽出完了はEXTRACT_BEGIN/CHUNK/ENDの通知を待つ（長時間の応答待ちはしない）
   const ack = await sendToContentTab(tabId, { type: 'START_EXTRACT', embedImages: true });
   if (!ack || !ack.ok) {
     sendResponse({ ok: false, error: ack && ack.error ? ack.error : '不明なエラー（content scriptと通信できない可能性）' });
@@ -321,6 +331,7 @@ async function handleStartRequest(tabId, tabUrl, format, sendResponse) {
   state.format = ['html', 'pdf'].includes(format) ? format : 'docx';
   state.cancelling = false;
   state.running = true;
+  state.pending = null; // 前回の受信バッファが残らないようにする
   broadcastStatus();
   setLog(
     '抽出開始（自動スクロール中。チャットの長さによっては数十秒〜数分かかります。最大10分で自動終了します。popupを閉じても処理は継続します）...'
@@ -343,17 +354,44 @@ async function handleCancelRequest(sendResponse) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
 
-  // content scriptからの進捗・完了の通知。いずれも「応答を待たれていない」
-  // 一方的な通知として届く（PROGRESSと同じやり方）
-  if (msg.type === 'PROGRESS' || msg.type === 'PROGRESS_STAGE' || msg.type === 'EXTRACT_RESULT') {
+  // content scriptからの進捗・抽出結果の通知。いずれも「応答を待たれて
+  // いない」一方的な通知として届く。抽出結果は1回のsendMessageの上限
+  // (64MiB)を超えないよう、EXTRACT_BEGIN → EXTRACT_CHUNK ×N →
+  // EXTRACT_END に分割されて届くので、ここで結合する
+  if (
+    msg.type === 'PROGRESS' ||
+    msg.type === 'PROGRESS_STAGE' ||
+    msg.type === 'EXTRACT_BEGIN' ||
+    msg.type === 'EXTRACT_CHUNK' ||
+    msg.type === 'EXTRACT_END'
+  ) {
     const tabId = sender && sender.tab ? sender.tab.id : null;
     if (tabId == null || tabId !== state.tabId) return; // 対象タブ以外・二重配信は無視
     if (msg.type === 'PROGRESS') {
       if (state.running) updateProgressLog(`収集済み: ${msg.count}件 (走査${msg.round}周目)`);
     } else if (msg.type === 'PROGRESS_STAGE') {
       if (state.running) pushLog(msg.stage);
+    } else if (msg.type === 'EXTRACT_BEGIN') {
+      state.pending = { messages: [], pageTitle: msg.pageTitle, stats: msg.stats };
+    } else if (msg.type === 'EXTRACT_CHUNK') {
+      // 大きなチャンクでもスタックを消費しないようconcatで結合する
+      //（push(...arr)は要素数が多いと引数上限で落ちる）
+      if (state.pending) state.pending.messages = state.pending.messages.concat(msg.messages || []);
     } else {
-      handleExtractResult(msg);
+      const pending = state.pending;
+      state.pending = null;
+      if (!msg.ok) {
+        handleExtractResult({ ok: false, error: msg.error });
+      } else if (!pending) {
+        handleExtractResult({ ok: false, error: '内部エラー: 抽出結果の開始通知(EXTRACT_BEGIN)を受信していません' });
+      } else {
+        handleExtractResult({
+          ok: true,
+          messages: pending.messages,
+          stats: pending.stats,
+          pageTitle: pending.pageTitle,
+        });
+      }
     }
     return;
   }

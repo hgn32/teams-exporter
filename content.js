@@ -727,6 +727,72 @@ async function autoScrollAndCollect(onProgress) {
   return Array.from(seen.values());
 }
 
+function sendToBackground(message) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(message, () => {
+      void chrome.runtime.lastError;
+      resolve();
+    });
+  });
+}
+
+// 抽出結果は1回のsendMessageで送るとChromeのメッセージ上限(64MiB)を
+// 超えることがある（画像をbase64で埋め込むため、長いチャットでは
+// 容易に超える。実際に2500件超の抽出で上限エラーを確認）。
+// サイズを見積もりながら EXTRACT_BEGIN → EXTRACT_CHUNK ×N →
+// EXTRACT_END の順に分割して送り、background側で結合する。
+// 各チャンクの送達を待ってから次を送るため、順序は保証される
+const MAX_CHUNK_BYTES = 16 * 1024 * 1024; // 上限64MiBに対し余裕を持たせる
+const MAX_SINGLE_MESSAGE_BYTES = 48 * 1024 * 1024;
+
+function approxMessageSize(m) {
+  try {
+    return JSON.stringify(m).length;
+  } catch (e) {
+    return 0;
+  }
+}
+
+async function sendExtractResult(messages, stats, pageTitleInfo) {
+  await sendToBackground({
+    type: 'EXTRACT_BEGIN',
+    pageTitle: pageTitleInfo.title,
+    titleSource: pageTitleInfo.source,
+    stats,
+  });
+
+  let chunk = [];
+  let chunkBytes = 0;
+  async function flush() {
+    if (!chunk.length) return;
+    await sendToBackground({ type: 'EXTRACT_CHUNK', messages: chunk });
+    chunk = [];
+    chunkBytes = 0;
+  }
+
+  for (const m of messages) {
+    let size = approxMessageSize(m);
+    // 1件だけでチャンク上限を大きく超えるメッセージは、画像の埋め込みを
+    // 諦めてサイズを落とす（そのまま送ると単独チャンクでも64MiBを
+    // 超えうるため。リンク表示へのフォールバックは各生成器側で行われる）
+    if (size > MAX_SINGLE_MESSAGE_BYTES) {
+      for (const img of m.images || []) {
+        if (img.dataUri) {
+          delete img.dataUri;
+          img.error = '画像が大きすぎるため埋め込みを断念しました';
+        }
+        if (typeof img.src === 'string' && img.src.length > 1000) img.src = '';
+      }
+      size = approxMessageSize(m);
+    }
+    if (chunkBytes + size > MAX_CHUNK_BYTES) await flush();
+    chunk.push(m);
+    chunkBytes += size;
+  }
+  await flush();
+  await sendToBackground({ type: 'EXTRACT_END', ok: true });
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CANCEL_EXTRACT') {
     extractionCancelled = true;
@@ -738,7 +804,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // 抽出には数十秒〜最大10分かかる。background(service worker)は1回の
     // 応答をそんなに長時間待ち続けられない（アイドル判定で再起動されうる）
     // ため、開始を受理した旨だけ即座に返し、実際の結果はPROGRESSと同じ
-    // 「待たれない通知」としてEXTRACT_RESULTで別途送る
+    // 「待たれない通知」としてEXTRACT_BEGIN/CHUNK/ENDで別途送る
     sendResponse({ ok: true });
 
     (async () => {
@@ -790,17 +856,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
         }
 
-        chrome.runtime.sendMessage({
-          type: 'EXTRACT_RESULT',
-          ok: true,
-          messages,
-          stats,
-          pageTitle: pageTitleInfo.title,
-          titleSource: pageTitleInfo.source,
-        });
+        chrome.runtime.sendMessage({ type: 'PROGRESS_STAGE', stage: '結果を送信中...' });
+        await sendExtractResult(messages, stats, pageTitleInfo);
       } catch (e) {
         chrome.runtime.sendMessage({
-          type: 'EXTRACT_RESULT',
+          type: 'EXTRACT_END',
           ok: false,
           error: String(e && e.message ? e.message : e),
         });
