@@ -5,12 +5,16 @@
   <meta charset="UTF-8" />
   <title>Teams メッセージ抽出</title>
   <style>
+    /* ポップアップの横幅は中身の幅で決まるため、はみ出す要素があると
+       途中で勝手に広がる。widthを固定したうえで、万一はみ出しても
+       横に広がらないようoverflow-xで抑える */
     body {
       width: 320px;
       font-family: -apple-system, "Segoe UI", sans-serif;
       padding: 12px;
       font-size: 13px;
       color: #222;
+      overflow-x: hidden;
     }
 
     h1 {
@@ -38,13 +42,21 @@
       cursor: not-allowed;
     }
 
+    /* ログが増えて縦スクロールバーが出ると、Windowsのように幅を持つ
+       スクロールバーでは表示幅がその分（約15px）狭まり、ポップアップの
+       見た目の幅が途中で変わってしまう。scrollbar-gutterで最初から
+       スクロールバーの領域を確保し、有無にかかわらず幅を一定にする。
+       あわせて、折り返せない長いURL・ファイル名で横に広がらないよう
+       overflow-wrapで強制的に折り返す */
     #status {
       margin-top: 8px;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
       font-size: 12px;
       color: #444;
       max-height: 140px;
       overflow-y: auto;
+      scrollbar-gutter: stable;
       border-top: 1px solid #eee;
       padding-top: 6px;
     }
